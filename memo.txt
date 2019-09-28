@@ -1,0 +1,2 @@
+imagick: use https://github.com/rogeercruz/docker-wordpress-imagemagick with edited dockerfile and compose
+gd: use https://github.com/nezhar/wordpress-docker-compose
