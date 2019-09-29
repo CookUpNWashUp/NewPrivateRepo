@@ -1,2 +1,4 @@
 imagick: use https://github.com/rogeercruz/docker-wordpress-imagemagick with edited dockerfile and compose
+	If all else fails just download wordpress 4.9 and put it in the root. Don't forget to add the don't update variables
+	If the SQL server fails just delete the db and let it reinitialize
 gd: use https://github.com/nezhar/wordpress-docker-compose
