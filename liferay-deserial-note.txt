@@ -1,0 +1,105 @@
+ANALYSIS:
+- The endpoint /api/spring and /api/liferay are normally restricted to localhost
+- Endpoints support  ACLs, no wildcards
+- Enterprise proxies are added to the ACL of the endpoint
+- Endpoint has blacklist on gadgets, but some can still be used
+- Image gadget was first discovered
+
+OBJECTIVES:
+- Bypass the whitelist
+	-> Not technically bypassable
+	-> Bypassable if  proxy to internet is added to whitelist
+- Locate the serialization vulnerability
+	-> Liferay CE 7.0 GA3
+	-> Doesn't block C3P0, DiskFileItem variants, JRMPListener, JRMPClient, and Java DoS gadgets
+	-> Typically, this involves using a byte[] from the blacklisted ObjectInputStream to create a new ObjectInputStream that doesn’t have a blacklist.
+- Trigger the vuln from outside localhost
+	-> Only possible when proxy is whitelisted
+TODO:
+- Read up on deserialization on Java <DONE>
+	-> https://github.com/pwntester/SerialKillerBypassGadgetCollection
+	-> Contains a paper <DONE>
+	-> Look for the link of the talk
+- Setup tomcat and the liferay portal <DONE>
+	-> Prepackaged
+	-> Let's use NetBeans
+		-> Used their provided Eclipse distro
+		-> Env missing portal-impl for some reason
+- (Optional) Look for docker
+- Look for the api on Github <DONE>
+	-> Record the blacklist implemented
+	-> https://github.com/liferay/liferay-portal/commit/584e569add9921646706d6170d9bcfb5c7d68c11
+		Can be found at the regex part
+	-> https://issues.liferay.com/browse/LPS-64441 serialization vuln found and worked around with whitelisting only localhost
+	-> Do I need to learn how to use axis 2 for this ? < No :)> 
+	
+----- GAMEPLAN -----
+
+TARGETS:
+/api/liferay: com.liferay.portal.servlet.TunnelServlet : /portal-impl/src/com/liferay/portal/servlet/TunnelServlet.java
+	-> This servlet is obviously vulnerable
+/api/spring: com.liferay.portal.spring.servlet.RemotingServlet : /portal-impl/com/liferay/portal/spring/servlet/RemotingServlet.java
+	-> This servlet is written in Spring and therefore loads the bean definition at WEB-INF/remoting-servlet.xml
+	-> Version >7.0 is not vulnerable, since this default context file was removed. 
+		-> The API in this case will load an empty context and returns 404
+	-> Only 2 classes responsible for requests:
+		-> org.springframework.remoting.caucho.HessianServiceExporter (Have not investigated)
+		-> org.springframework.remoting.httpinvoker.HttpInvokerServiceExporter (VULNERABLE)
+			-> Callstack:
+				+ POST
+				+ liferay/.../RemotingServlet.service()
+				+ srpingframework/.../DispatcherServlet.service()
+				+ springframework/.../HttpInvokerServiceExporter.handleRequest()
+				+ HttpInvokerServiceExporter.readRemoteInvocation(HTTPRequest)
+				+ HttpInvokerServiceExporter.readRemoteInvocation(request, request.getInputStream())
+				+ springframework.remoting.rmi.RemoteInvocationSerializingExporter.doReadRemoteInvocation(ois)
+					-> HttpInvokerServiceExporter is extended from this classes
+				+ ois.readObject()
+	
+OPTION 1:
+- Build payload with SerialKiller
+	-> https://mogwailabs.de/blog/2019/03/attacking-java-rmi-services-after-jep-290/ explains JRMI pretty clearly
+	-> Wraps it with BeanUtils1 from https://github.com/pwntester/SerialKillerBypassGadgetCollection/blob/master/src/main/java/serialkiller/bypass/Beanutils1.java
+	-> Bypass blacklist filter
+		-> This payload in theory works for both targets
+			-> plain POST data for /api/liferay
+			-> POST inlcuding an InputStream for /api/spring
+				-> http://www.adam-bien.com/roller/abien/entry/sending_an_inputstream_to_jax
+	-> Profit :) 
+	
+OPTION 2:
+	- Build payload with SerializableRenderedImage from Oracle's jai_core.jar to bypass the blacklist.
+		-> https://deadcode.me/blog/2016/09/18/Blind-Java-Deserialization-Part-II.html
+		-> Has link to part 1
+		-> Part 1 has links to understanding the how to string gadget together in the CommonCollection1 payload
+	- Source: https://github.com/mauricio/jai-core/blob/master/src/share/classes/javax/media/jai/remote/SerializableRenderedImage.java
+	- Stacktrace: finalize() -> dispose() -> (Sink)closeClient()
+		-> finalize is triggered when deep copy is not used
+			-> private boolean useDeepCopy = False;
+		-> closeClient() is called when isServer is False
+			-> ensured by constructor
+			-> public SerializableRenderedImage(RenderedImage source)
+		-> closeClient() will first try to connectToServer()
+			-> private InetAddress host = attacker; 
+				-> host is set to localhost by the constructor
+			-> private int port = attackerPort;
+				-> Initialized by openServer()
+				-> serverSocket = (new ServerSocket(0)).getlocalPort(); //Ephermeral
+					-> Extend this class and overwrite openServer()
+					OR
+					-> Cold edit on  the line (:v Unexpectedly doable)
+					OR
+					-> Modified the thing in source code -> Recompile the library with Ant (Choose this as first option)
+						-> Extend a method to return an object with the host and port we want
+						OR
+						-> Just modify the source
+						-> Serialize the evil object (1st stage)
+						-> Start a listener on a port. The port always reply with ysoserial payload (2nd stage)
+						-> Send the payload					
+	- Profit :) 
+	
+OPTION 3: (Most unsure)
+	- Use JRMPClient and pumps JRMPServer to 1099?
+		-> Most spicy, since target can rig serialized objects to pwn attacker too :) 
+	- Profit?
+	
